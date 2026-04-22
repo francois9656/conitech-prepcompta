@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Conitech PrepCompta",
+  "description": "Extension Chrome de préparation comptable pour le suivi des relevés bancaires.",
+  "version": "0.1.0",
+  "permissions": ["storage", "sidePanel"],
+  "background": {
+    "service_worker": "assets/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Conitech PrepCompta"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["viewer.html", "assets/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
