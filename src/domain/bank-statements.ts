@@ -1,6 +1,7 @@
 import {
   type BankStatementMonthItem,
-  type BankStatementsSectionState,
+  type MonthlyDocumentSectionKey,
+  type MonthlyDocumentSectionState,
   type MonthDocumentStatus,
   type Period
 } from "./models";
@@ -23,14 +24,15 @@ export function createDefaultPeriod(): Period {
 
 export function buildBankStatementsState(
   period: Period,
-  previousItems: BankStatementMonthItem[] = []
-): BankStatementsSectionState {
+  previousItems: BankStatementMonthItem[] = [],
+  sectionKey: MonthlyDocumentSectionKey = "bankStatements"
+): MonthlyDocumentSectionState {
   const expectedMonths = generateExpectedMonths(period, previousItems);
   const completedCount = expectedMonths.filter((item) => item.status !== "missing_unresolved").length;
   const unresolvedCount = expectedMonths.filter((item) => item.status === "missing_unresolved").length;
 
   return {
-    sectionKey: "bankStatements",
+    sectionKey,
     periodStart: period.start,
     periodEnd: period.end,
     expectedMonths,

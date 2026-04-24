@@ -14,5 +14,5 @@
     "allowSyntheticDefaultImports": true,
     "types": ["chrome", "node"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src"]
 }

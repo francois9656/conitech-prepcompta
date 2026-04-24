@@ -1,0 +1,11 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build project with Vite",
+			"type": "shell",
+			"command": "vite build",
+			"group": "build"
+		}
+		"label": "Build project",
+		"command": "echo 'build placeholder'",
