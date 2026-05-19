@@ -56,15 +56,20 @@ const PAGE_MARGIN_BOTTOM = 72;
 const CONTENT_WIDTH = A4_WIDTH - PAGE_MARGIN_X * 2;
 const COMMENT_LINE_HEIGHT = 18;
 const IMPORTED_PDF_MARGIN = 24;
-const TRANSACTION_SUMMARY_ROW_PADDING = 6;
-const TRANSACTION_SUMMARY_HEADER_HEIGHT = 22;
+const TRANSACTION_SUMMARY_MARGIN_X = 40;
+const TRANSACTION_SUMMARY_WIDTH = A4_WIDTH - TRANSACTION_SUMMARY_MARGIN_X * 2;
+const TRANSACTION_SUMMARY_FONT_SIZE = 8.2;
+const TRANSACTION_SUMMARY_HEADER_FONT_SIZE = 8.8;
+const TRANSACTION_SUMMARY_LINE_HEIGHT = 10;
+const TRANSACTION_SUMMARY_ROW_PADDING = 5;
+const TRANSACTION_SUMMARY_HEADER_HEIGHT = 20;
 const TRANSACTION_SUMMARY_COLUMNS = {
-  date: 58,
-  description: 168,
-  debit: 58,
-  credit: 58,
-  category: 92,
-  note: CONTENT_WIDTH - 58 - 168 - 58 - 58 - 92
+  date: 54,
+  description: 178,
+  debit: 54,
+  credit: 54,
+  category: 112,
+  note: TRANSACTION_SUMMARY_WIDTH - 54 - 178 - 54 - 54 - 112
 };
 
 export async function generateMergedBankStatementsPdf(
@@ -478,7 +483,7 @@ function addTransactionSummaryPages(
     return;
   }
 
-  const rows = buildTransactionSummaryRows(transactions, file.annotations, state);
+  const rows = buildTransactionSummaryRows(transactions, file, state);
   const pageHeightLimit = A4_HEIGHT - PAGE_MARGIN_TOP - PAGE_MARGIN_BOTTOM - 40;
   const pages: typeof rows[] = [];
   let currentPage: typeof rows = [];
@@ -522,9 +527,11 @@ function addTransactionSummaryPages(
 
 function buildTransactionSummaryRows(
   transactions: BankTransaction[],
-  annotations: StoredPdfAnnotation[],
+  file: StoredPdfFile,
   state: AppState
 ): Array<{ date: string; description: string; debit: string; credit: string; category: string; note: string }> {
+  const annotations = file.annotations;
+  const transactionNotes = readTransactionNotes(file.id);
   const annotationBuckets = new Map<string, StoredPdfAnnotation[]>();
   for (const annotation of annotations) {
     const key = annotation.transactionDate || "__empty__";
@@ -536,7 +543,12 @@ function buildTransactionSummaryRows(
   return transactions.map((transaction, index) => {
     const match = findFirstMatchingCategory(transaction, state);
     const categoryLabel = state.categories.find((item) => item.id === match?.categoryId)?.label ?? "";
-    const note = consumeAnnotationForTransaction(transaction, annotations[index], annotationBuckets);
+    const annotationNote = consumeAnnotationForTransaction(transaction, annotations[index], annotationBuckets);
+    const note = combineNotes(
+      transactionNotes.autoNotes[String(index)],
+      transactionNotes.manualNotes[String(index)],
+      annotationNote
+    );
 
     return {
       date: transaction.date ?? "",
@@ -549,6 +561,49 @@ function buildTransactionSummaryRows(
   });
 }
 
+function readTransactionNotes(fileId: string): {
+  manualNotes: Record<string, string>;
+  autoNotes: Record<string, string>;
+} {
+  return {
+    manualNotes: readLocalStorageRecord(`manualNotes-${fileId}`),
+    autoNotes: readLocalStorageRecord(`autoNotes-${fileId}`)
+  };
+}
+
+function readLocalStorageRecord(key: string): Record<string, string> {
+  if (typeof localStorage === "undefined") {
+    return {};
+  }
+
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function combineNotes(...notes: Array<string | null | undefined>): string {
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+
+  for (const note of notes) {
+    const value = note?.trim();
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    cleaned.push(value);
+  }
+
+  return cleaned.join(" — ");
+}
+
 function findFirstMatchingCategory(
   transaction: Pick<BankTransaction, "description" | "debit" | "credit">,
   state: AppState
@@ -558,7 +613,7 @@ function findFirstMatchingCategory(
     stringifyAmountForMatching(transaction.debit),
     stringifyAmountForMatching(transaction.credit)
   ]
-    .map((value) => value.trim().toLowerCase())
+    .map((value) => normalizeTextForMatching(value))
     .filter(Boolean)
     .join(" ");
 
@@ -574,10 +629,18 @@ function findFirstMatchingCategory(
     if (!category || category.hidden) {
       return false;
     }
-    return searchableText.includes(rule.pattern.toLowerCase());
+    return searchableText.includes(normalizeTextForMatching(rule.pattern));
   });
 
   return matchedRule ? { categoryId: matchedRule.categoryId } : null;
+}
+
+function normalizeTextForMatching(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
 function consumeAnnotationForTransaction(
@@ -598,15 +661,15 @@ function estimateTransactionSummaryRowHeight(
   row: { description: string; category: string; note: string },
   fontRegular: PDFFont
 ): number {
-  const descriptionLines = wrapTextOrEmpty(row.description, fontRegular, 9.5, TRANSACTION_SUMMARY_COLUMNS.description - 8);
-  const categoryLines = wrapTextOrEmpty(row.category, fontRegular, 9.5, TRANSACTION_SUMMARY_COLUMNS.category - 8);
-  const noteLines = wrapTextOrEmpty(row.note, fontRegular, 9.5, TRANSACTION_SUMMARY_COLUMNS.note - 8);
+  const descriptionLines = wrapTextOrEmpty(row.description, fontRegular, TRANSACTION_SUMMARY_FONT_SIZE, TRANSACTION_SUMMARY_COLUMNS.description - 8);
+  const categoryLines = wrapTextOrEmpty(row.category, fontRegular, TRANSACTION_SUMMARY_FONT_SIZE, TRANSACTION_SUMMARY_COLUMNS.category - 8);
+  const noteLines = wrapTextOrEmpty(row.note, fontRegular, TRANSACTION_SUMMARY_FONT_SIZE, TRANSACTION_SUMMARY_COLUMNS.note - 8);
   const lineCount = Math.max(descriptionLines.length, categoryLines.length, noteLines.length, 1);
-  return lineCount * 12 + TRANSACTION_SUMMARY_ROW_PADDING * 2;
+  return lineCount * TRANSACTION_SUMMARY_LINE_HEIGHT + TRANSACTION_SUMMARY_ROW_PADDING * 2;
 }
 
 function drawTransactionSummaryTableHeader(page: PDFPage, fontRegular: PDFFont, fontBold: PDFFont, y: number): number {
-  let x = PAGE_MARGIN_X;
+  let x = TRANSACTION_SUMMARY_MARGIN_X;
   const columns: Array<[string, number]> = [
     ["Date", TRANSACTION_SUMMARY_COLUMNS.date],
     ["Description", TRANSACTION_SUMMARY_COLUMNS.description],
@@ -617,9 +680,9 @@ function drawTransactionSummaryTableHeader(page: PDFPage, fontRegular: PDFFont, 
   ];
 
   page.drawRectangle({
-    x: PAGE_MARGIN_X,
+    x: TRANSACTION_SUMMARY_MARGIN_X,
     y: y - TRANSACTION_SUMMARY_HEADER_HEIGHT + 4,
-    width: CONTENT_WIDTH,
+    width: TRANSACTION_SUMMARY_WIDTH,
     height: TRANSACTION_SUMMARY_HEADER_HEIGHT,
     color: rgb(0.89, 0.94, 0.96)
   });
@@ -635,8 +698,8 @@ function drawTransactionSummaryTableHeader(page: PDFPage, fontRegular: PDFFont, 
     });
     page.drawText(label, {
       x: x + 4,
-      y: y - 14,
-      size: 10,
+      y: y - 13,
+      size: TRANSACTION_SUMMARY_HEADER_FONT_SIZE,
       font: fontBold,
       color: rgb(0.08, 0.16, 0.22)
     });
@@ -652,15 +715,15 @@ function drawTransactionSummaryRow(
   y: number,
   row: { date: string; description: string; debit: string; credit: string; category: string; note: string }
 ): number {
-  const descriptionLines = wrapTextOrEmpty(row.description, fontRegular, 9.5, TRANSACTION_SUMMARY_COLUMNS.description - 8);
-  const categoryLines = wrapTextOrEmpty(row.category, fontRegular, 9.5, TRANSACTION_SUMMARY_COLUMNS.category - 8);
-  const noteLines = wrapTextOrEmpty(row.note, fontRegular, 9.5, TRANSACTION_SUMMARY_COLUMNS.note - 8);
+  const descriptionLines = wrapTextOrEmpty(row.description, fontRegular, TRANSACTION_SUMMARY_FONT_SIZE, TRANSACTION_SUMMARY_COLUMNS.description - 8);
+  const categoryLines = wrapTextOrEmpty(row.category, fontRegular, TRANSACTION_SUMMARY_FONT_SIZE, TRANSACTION_SUMMARY_COLUMNS.category - 8);
+  const noteLines = wrapTextOrEmpty(row.note, fontRegular, TRANSACTION_SUMMARY_FONT_SIZE, TRANSACTION_SUMMARY_COLUMNS.note - 8);
   const lineCount = Math.max(descriptionLines.length, categoryLines.length, noteLines.length, 1);
-  const rowHeight = lineCount * 12 + TRANSACTION_SUMMARY_ROW_PADDING * 2;
+  const rowHeight = lineCount * TRANSACTION_SUMMARY_LINE_HEIGHT + TRANSACTION_SUMMARY_ROW_PADDING * 2;
   const topY = y;
-  const baseY = topY - TRANSACTION_SUMMARY_ROW_PADDING - 10;
+  const baseY = topY - TRANSACTION_SUMMARY_ROW_PADDING - TRANSACTION_SUMMARY_FONT_SIZE;
 
-  let x = PAGE_MARGIN_X;
+  let x = TRANSACTION_SUMMARY_MARGIN_X;
   const cells = [
     { width: TRANSACTION_SUMMARY_COLUMNS.date, lines: [row.date], alignRight: false },
     { width: TRANSACTION_SUMMARY_COLUMNS.description, lines: descriptionLines, alignRight: false },
@@ -681,11 +744,11 @@ function drawTransactionSummaryRow(
     });
 
     cell.lines.forEach((line, index) => {
-      const textWidth = fontRegular.widthOfTextAtSize(line, 9.5);
+      const textWidth = fontRegular.widthOfTextAtSize(line, TRANSACTION_SUMMARY_FONT_SIZE);
       page.drawText(line, {
         x: cell.alignRight ? x + cell.width - textWidth - 4 : x + 4,
-        y: baseY - index * 12,
-        size: 9.5,
+        y: baseY - index * TRANSACTION_SUMMARY_LINE_HEIGHT,
+        size: TRANSACTION_SUMMARY_FONT_SIZE,
         font: fontRegular,
         color: rgb(0.18, 0.23, 0.29)
       });
@@ -969,7 +1032,7 @@ function drawPageHeader(page: PDFPage, fontRegular: PDFFont, fontBold: PDFFont, 
 
   page.drawText(title, {
     x: PAGE_MARGIN_X,
-    y: A4_HEIGHT - PAGE_MARGIN_TOP + 20,
+    y: A4_HEIGHT - PAGE_MARGIN_TOP,
     size: 24,
     font: fontBold,
     color: rgb(0.08, 0.16, 0.22)

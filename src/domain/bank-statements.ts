@@ -11,10 +11,12 @@ const monthFormatter = new Intl.DateTimeFormat("fr-CA", {
   year: "numeric"
 });
 
+const MAX_MONTHLY_DOCUMENTS = 12;
+
 export function createDefaultPeriod(): Period {
   const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  const end = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+  const start = new Date(now.getFullYear(), now.getMonth() - (MAX_MONTHLY_DOCUMENTS - 1), 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
   return {
     start: toDateInputValue(start),
@@ -55,9 +57,11 @@ export function generateExpectedMonths(
   const previousByMonth = new Map(previousItems.map((item) => [item.monthKey, item]));
   const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
   const last = new Date(end.getFullYear(), end.getMonth(), 1);
+  const maxLast = new Date(start.getFullYear(), start.getMonth() + (MAX_MONTHLY_DOCUMENTS - 1), 1);
+  const effectiveLast = last > maxLast ? maxLast : last;
   const months: BankStatementMonthItem[] = [];
 
-  while (cursor <= last) {
+  while (cursor <= effectiveLast) {
     const monthKey = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`;
     const existing = previousByMonth.get(monthKey);
     const status = deriveStatus(existing);

@@ -1,13 +1,12 @@
 import type { LayoutAnalysisResult } from "../../core/types/extraction";
 
-
 import { BmoBankParser } from "./bmo/bmo-parser";
+import { DesjardinsCreditCardParser } from "./desjardins/desjardins-parser";
 import type { BankParser } from "./types";
-import { desjardinsParser } from "./desjardins/desjardins-parser";
 
-// Désactivation du parser Desjardins (pas d’exemple réel)
 const PARSERS: BankParser[] = [
-  new BmoBankParser()
+  new BmoBankParser(),
+  new DesjardinsCreditCardParser()
 ];
 
 export function resolveBankParser(layout: LayoutAnalysisResult, overrideBankId?: string | null): BankParser | null {

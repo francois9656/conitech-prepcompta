@@ -49,8 +49,8 @@ type CategoryEditorState =
   | { mode: "edit"; categoryId: string; label: string; color: string }
   | null;
 type RuleEditorState =
-  | { mode: "add"; pattern: string; categoryId: string }
-  | { mode: "edit"; ruleId: string; pattern: string; categoryId: string }
+  | { mode: "add"; pattern: string; categoryId: string; note: string }
+  | { mode: "edit"; ruleId: string; pattern: string; categoryId: string; note: string }
   | null;
 
 export async function initSidePanelApp(container: HTMLElement): Promise<void> {
@@ -70,6 +70,8 @@ export async function initSidePanelApp(container: HTMLElement): Promise<void> {
   let mergedPdfDebug: { success?: { fileName: string; size: number }; error?: string } | null = null;
   let activeTab: SidePanelTab = isStandaloneConfigurationPage ? "configuration" : "documents";
   let activeCategoryFilter: CategoryFilter = "active";
+  let categorySearchQuery = "";
+  let ruleSearchQuery = "";
   let collapsedMonthlySections: Record<MonthlyDocumentSectionKey, boolean> = {
     bankStatements: false,
     creditCardStatements: false
@@ -91,6 +93,8 @@ export async function initSidePanelApp(container: HTMLElement): Promise<void> {
       activeTab,
       isStandaloneConfigurationPage,
       activeCategoryFilter,
+      categorySearchQuery,
+      ruleSearchQuery,
       collapsedMonthlySections,
       categoryEditor,
       ruleEditor
@@ -265,9 +269,19 @@ export async function initSidePanelApp(container: HTMLElement): Promise<void> {
       if (form.dataset.form === "rule-editor") {
         const formData = new FormData(form);
         const pattern = String(formData.get("pattern") ?? "").trim();
-        const categoryId = String(formData.get("categoryId") ?? "").trim();
-        if (!pattern || !categoryId) {
-          alert("Le mot-clé et la catégorie sont obligatoires.");
+        const categoryInput = String(formData.get("categoryId") ?? "").trim();
+        const categoryId = categoryInput ? resolveCategoryIdFromInput(categoryInput, state.categories) : undefined;
+        const note = String(formData.get("note") ?? "").trim() || undefined;
+        if (!pattern) {
+          alert("Le mot-clé est obligatoire.");
+          return;
+        }
+        if (categoryInput && !categoryId) {
+          alert("Choisissez une catégorie dans la liste.");
+          return;
+        }
+        if (!categoryId && !note) {
+          alert("La règle doit définir au moins une catégorie ou une note.");
           return;
         }
 
@@ -275,14 +289,14 @@ export async function initSidePanelApp(container: HTMLElement): Promise<void> {
         if (currentRuleEditor?.mode === "edit") {
           state = await updateCategorizationSettings({
             categorizationRules: state.categorizationRules.map((item) =>
-              item.id === currentRuleEditor.ruleId ? { ...item, pattern, categoryId } : item
+              item.id === currentRuleEditor.ruleId ? { ...item, pattern, categoryId, note } : item
             )
           });
         } else {
           state = await updateCategorizationSettings({
             categorizationRules: [
               ...state.categorizationRules,
-              { id: `rule_${crypto.randomUUID()}`, pattern, categoryId }
+              { id: `rule_${crypto.randomUUID()}`, pattern, categoryId, note }
             ]
           });
         }
@@ -293,6 +307,26 @@ export async function initSidePanelApp(container: HTMLElement): Promise<void> {
     } catch (error) {
       rerender();
       alert(getErrorMessage(error));
+    }
+  });
+
+  container.addEventListener("input", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) {
+      return;
+    }
+
+    if (target.dataset.settingsFilter === "categories") {
+      categorySearchQuery = target.value;
+      rerender();
+      focusSettingsFilter(container, "categories", categorySearchQuery.length);
+      return;
+    }
+
+    if (target.dataset.settingsFilter === "rules") {
+      ruleSearchQuery = target.value;
+      rerender();
+      focusSettingsFilter(container, "rules", ruleSearchQuery.length);
     }
   });
 
@@ -488,10 +522,7 @@ export async function initSidePanelApp(container: HTMLElement): Promise<void> {
       try {
         if (action === "add-rule") {
           const firstVisibleCategory = state.categories.find((category) => !category.hidden);
-          if (!firstVisibleCategory) {
-            return;
-          }
-          ruleEditor = { mode: "add", pattern: "", categoryId: firstVisibleCategory.id };
+          ruleEditor = { mode: "add", pattern: "", categoryId: firstVisibleCategory?.id ?? "", note: "" };
           categoryEditor = null;
           rerender();
           return;
@@ -506,7 +537,8 @@ export async function initSidePanelApp(container: HTMLElement): Promise<void> {
             mode: "edit",
             ruleId,
             pattern: rule.pattern,
-            categoryId: rule.categoryId
+            categoryId: rule.categoryId ?? "",
+            note: rule.note ?? ""
           };
           categoryEditor = null;
           rerender();
@@ -800,6 +832,8 @@ function render(
   activeTab: SidePanelTab = "documents",
   isStandaloneConfigurationPage = false,
   activeCategoryFilter: CategoryFilter = "active",
+  categorySearchQuery = "",
+  ruleSearchQuery = "",
   collapsedMonthlySections: Record<MonthlyDocumentSectionKey, boolean> = {
     bankStatements: false,
     creditCardStatements: false
@@ -849,7 +883,17 @@ function render(
 
         ${
           activeTab === "configuration"
-            ? renderConfigurationTab(state, includeMissingJustifiedComments, preview, providedDocumentsCount, isGeneratingMergedPdf, mergedPdfDebug, activeCategoryFilter)
+            ? renderConfigurationTab(
+                state,
+                includeMissingJustifiedComments,
+                preview,
+                providedDocumentsCount,
+                isGeneratingMergedPdf,
+                mergedPdfDebug,
+                activeCategoryFilter,
+                categorySearchQuery,
+                ruleSearchQuery
+              )
                 .replace(
                   "__CATEGORY_EDITOR__",
                   renderCategoryEditor(categoryEditor)
@@ -858,7 +902,17 @@ function render(
                   "__RULE_EDITOR__",
                   renderRuleEditor(ruleEditor, state.categories)
                 )
-            : renderDocumentsTab(state, inlineViewerMonthKey, processingSectionKey, processingMonthKey, processingFileName, collapsedMonthlySections)
+            : renderDocumentsTab(
+                state,
+                inlineViewerMonthKey,
+                processingSectionKey,
+                processingMonthKey,
+                processingFileName,
+                collapsedMonthlySections,
+                preview,
+                providedDocumentsCount,
+                isGeneratingMergedPdf
+              )
         }
       </div>
     </main>
@@ -876,11 +930,31 @@ function renderDocumentsTab(
   processingSectionKey: DocumentSectionKey | null,
   processingMonthKey: string | null,
   processingFileName: string | null,
-  collapsedMonthlySections: Record<MonthlyDocumentSectionKey, boolean>
+  collapsedMonthlySections: Record<MonthlyDocumentSectionKey, boolean>,
+  preview: ReturnType<typeof buildMergedBankStatementsPreview>,
+  providedDocumentsCount: number,
+  isGeneratingMergedPdf: boolean
 ): string {
+  const transactionStats = buildTransactionStats(state);
   return `
     ${renderProgressSummary(buildMonthlyProgressSummary(state, "bankStatements"), "Relevés bancaires")}
     ${renderProgressSummary(buildMonthlyProgressSummary(state, "creditCardStatements"), "Relevés de carte de crédit")}
+    ${renderTransactionStats(transactionStats)}
+
+    <section class="panel-card">
+      ${renderMergePreview(preview)}
+      <div class="actions-row merge-actions">
+        <button
+          class="primary-button"
+          type="button"
+          data-global-action="generate-merged-pdf"
+          ${providedDocumentsCount === 0 || isGeneratingMergedPdf ? "disabled" : ""}
+        >
+          Générer PDF fusionné
+        </button>
+        <p class="helper-text">Le fichier inclut les pages d'introduction, les commentaires optionnels, puis chaque section de documents dans son propre bloc.</p>
+      </div>
+    </section>
 
     <section class="panel-card">
       <div class="panel-header-row">
@@ -899,6 +973,7 @@ function renderDocumentsTab(
           <input id="periodEnd" type="date" name="periodEnd" value="${state.bankStatements.periodEnd}" />
         </div>
       </form>
+      <p class="helper-text">La liste s'ajuste automatiquement à la période sélectionnée, avec un relevé bancaire et un relevé de carte de crédit par mois, jusqu'à 12 mois.</p>
     </section>
 
     <section class="section-list">
@@ -1072,6 +1147,10 @@ function hasMatchingVisibleCategory(
       return false;
     }
 
+    if (!rule.categoryId) {
+      return false;
+    }
+
     const category = state.categories.find((item) => item.id === rule.categoryId);
     if (!category || category.hidden) {
       return false;
@@ -1089,6 +1168,76 @@ function stringifyAmountForMatching(value: number | null | undefined): string {
   const fixed = value.toFixed(2);
   const fr = value.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return `${fixed} ${fixed.replace(".", ",")} ${fr}`;
+}
+
+function buildTransactionStats(state: AppState): {
+  totalTransactions: number;
+  uncategorizedCount: number;
+  periodStart: string | null;
+  periodEnd: string | null;
+} {
+  let totalTransactions = 0;
+  let uncategorizedCount = 0;
+  let periodStart: string | null = null;
+  let periodEnd: string | null = null;
+
+  for (const file of Object.values(state.pdfFiles)) {
+    const transactions = file.extractionResult?.transactions ?? [];
+    for (const transaction of transactions) {
+      totalTransactions++;
+      if (!hasMatchingVisibleCategory(transaction, state)) {
+        uncategorizedCount++;
+      }
+      if (transaction.date) {
+        const d = transaction.date.slice(0, 10);
+        if (!periodStart || d < periodStart) periodStart = d;
+        if (!periodEnd || d > periodEnd) periodEnd = d;
+      }
+    }
+  }
+
+  return { totalTransactions, uncategorizedCount, periodStart, periodEnd };
+}
+
+function renderTransactionStats(stats: ReturnType<typeof buildTransactionStats>): string {
+  if (stats.totalTransactions === 0) {
+    return "";
+  }
+
+  const formatDate = (dateStr: string | null): string => {
+    if (!dateStr) return "—";
+    const date = new Date(dateStr + "T12:00:00");
+    return new Intl.DateTimeFormat("fr-CA", { dateStyle: "medium" }).format(date);
+  };
+
+  const periodLabel =
+    stats.periodStart && stats.periodEnd
+      ? stats.periodStart === stats.periodEnd
+        ? formatDate(stats.periodStart)
+        : `${formatDate(stats.periodStart)} — ${formatDate(stats.periodEnd)}`
+      : "—";
+
+  const uncategorizedClass = stats.uncategorizedCount > 0 ? "stat-item--warning" : "stat-item--success";
+
+  return `
+    <section class="panel-card stats-card">
+      <p class="eyebrow">À traiter</p>
+      <div class="stats-grid">
+        <div class="stat-item">
+          <span class="stat-value">${stats.totalTransactions}</span>
+          <span class="stat-label">Transactions</span>
+        </div>
+        <div class="stat-item ${uncategorizedClass}">
+          <span class="stat-value">${stats.uncategorizedCount}</span>
+          <span class="stat-label">Non catégorisées</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-value stat-value--period">${escapeHtml(periodLabel)}</span>
+          <span class="stat-label">Période couverte</span>
+        </div>
+      </div>
+    </section>
+  `;
 }
 
 function renderSupplementalSection(
@@ -1154,7 +1303,9 @@ function renderConfigurationTab(
   providedDocumentsCount: number,
   isGeneratingMergedPdf: boolean,
   mergedPdfDebug?: { success?: { fileName: string; size: number }; error?: string } | null,
-  activeCategoryFilter: CategoryFilter = "active"
+  activeCategoryFilter: CategoryFilter = "active",
+  categorySearchQuery = "",
+  ruleSearchQuery = ""
 ): string {
   return `
     <div class="configuration-tab" id="configuration-section" role="tabpanel">
@@ -1210,7 +1361,7 @@ function renderConfigurationTab(
           <button class="primary-button" type="button" data-category-action="add-category">Ajouter</button>
         </div>
         __CATEGORY_EDITOR__
-        ${renderCategoryManager(state.categories, activeCategoryFilter)}
+        ${renderCategoryManager(state.categories, activeCategoryFilter, categorySearchQuery)}
       </section>
 
       <section class="panel-card">
@@ -1222,22 +1373,7 @@ function renderConfigurationTab(
           <button class="primary-button" type="button" data-rule-action="add-rule" ${state.categories.filter((category) => !category.hidden).length === 0 ? "disabled" : ""}>Ajouter</button>
         </div>
         __RULE_EDITOR__
-        ${renderRuleManager(state.categorizationRules, state.categories)}
-      </section>
-
-      <section class="panel-card">
-        ${renderMergePreview(preview)}
-        <div class="actions-row merge-actions">
-          <button
-            class="primary-button"
-            type="button"
-            data-global-action="generate-merged-pdf"
-            ${providedDocumentsCount === 0 || isGeneratingMergedPdf ? "disabled" : ""}
-          >
-            Générer PDF fusionné
-          </button>
-          <p class="helper-text">Le fichier inclut les pages d'introduction, les commentaires optionnels, puis chaque section de documents dans son propre bloc.</p>
-        </div>
+        ${renderRuleManager(state.categorizationRules, state.categories, ruleSearchQuery)}
       </section>
 
       <section class="panel-card debug-result-card">
@@ -1257,12 +1393,13 @@ function renderConfigurationTab(
   `;
 }
 
-function renderCategoryManager(categories: Category[], activeFilter: CategoryFilter): string {
+function renderCategoryManager(categories: Category[], activeFilter: CategoryFilter, searchQuery = ""): string {
   if (categories.length === 0) {
     return '<p class="helper-text">Aucune catégorie configurée.</p>';
   }
 
-  const filteredCategories = categories.filter((category) => {
+  const normalizedSearch = normalizeSearchText(searchQuery);
+  const filteredByStatus = categories.filter((category) => {
     if (activeFilter === "active") {
       return !category.hidden;
     }
@@ -1271,8 +1408,25 @@ function renderCategoryManager(categories: Category[], activeFilter: CategoryFil
     }
     return true;
   });
+  const filteredCategories = filteredByStatus.filter((category) => {
+    if (!normalizedSearch) {
+      return true;
+    }
+    return normalizeSearchText(`${category.label} ${category.id}`).includes(normalizedSearch);
+  });
 
   return `
+    <div class="field settings-filter-field">
+      <label for="categorySearch">Filtrer les catégories</label>
+      <input
+        id="categorySearch"
+        type="search"
+        value="${escapeHtml(searchQuery)}"
+        placeholder="Nom ou identifiant"
+        data-settings-filter="categories"
+        autocomplete="off"
+      />
+    </div>
     <div class="segmented-control" role="tablist" aria-label="Filtre des catégories">
       ${renderCategoryFilterButton("active", "Actives", activeFilter, categories.filter((category) => !category.hidden).length)}
       ${renderCategoryFilterButton("hidden", "Masquées", activeFilter, categories.filter((category) => category.hidden).length)}
@@ -1280,7 +1434,7 @@ function renderCategoryManager(categories: Category[], activeFilter: CategoryFil
     </div>
     ${
       filteredCategories.length === 0
-        ? '<p class="helper-text settings-empty-state">Aucune catégorie dans ce filtre.</p>'
+        ? `<p class="helper-text settings-empty-state">${normalizedSearch ? "Aucune catégorie ne correspond à ce filtre." : "Aucune catégorie dans ce filtre."}</p>`
         : `
     <ul class="settings-list">
       ${filteredCategories
@@ -1330,24 +1484,56 @@ function renderCategoryFilterButton(
   `;
 }
 
-function renderRuleManager(rules: CategorizationRule[], categories: Category[]): string {
+function renderRuleManager(rules: CategorizationRule[], categories: Category[], searchQuery = ""): string {
   if (rules.length === 0) {
     return '<p class="helper-text">Aucune règle configurée.</p>';
   }
 
+  const normalizedSearch = normalizeSearchText(searchQuery);
+  const filteredRules = rules.filter((rule) => {
+    if (!normalizedSearch) {
+      return true;
+    }
+    const category = rule.categoryId ? categories.find((item) => item.id === rule.categoryId) : null;
+    return normalizeSearchText(
+      `${rule.pattern} ${rule.categoryId ?? ""} ${category?.label ?? ""} ${rule.note ?? ""}`
+    ).includes(normalizedSearch);
+  });
+
   return `
+    <div class="field settings-filter-field">
+      <label for="ruleSearch">Filtrer les règles</label>
+      <input
+        id="ruleSearch"
+        type="search"
+        value="${escapeHtml(searchQuery)}"
+        placeholder="Mot-clé, catégorie ou note"
+        data-settings-filter="rules"
+        autocomplete="off"
+      />
+    </div>
+    ${
+      filteredRules.length === 0
+        ? '<p class="helper-text settings-empty-state">Aucune règle ne correspond à ce filtre.</p>'
+        : `
     <ul class="settings-list">
-      ${rules
+      ${filteredRules
         .map((rule) => {
-          const category = categories.find((item) => item.id === rule.categoryId);
+          const category = rule.categoryId ? categories.find((item) => item.id === rule.categoryId) : null;
           const color = normalizeColorInput(category?.color ?? "#6b7280");
+          const details = [
+            category ? `Catégorie : ${escapeHtml(category.label)}` : null,
+            rule.note ? `Note : ${escapeHtml(rule.note)}` : null
+          ]
+            .filter(Boolean)
+            .join(" — ");
 
           return `
             <li class="settings-list-item">
               <span class="category-swatch" style="--swatch:${escapeHtml(color)}"></span>
               <div>
                 <strong>${escapeHtml(rule.pattern)}</strong>
-                <p class="helper-text">Catégorie: ${escapeHtml(category?.label ?? rule.categoryId)}</p>
+                <p class="helper-text">${details}</p>
               </div>
               <div class="item-actions">
                 <button class="ghost-button compact-button" type="button" data-rule-action="edit-rule" data-rule-id="${escapeHtml(rule.id)}">Modifier</button>
@@ -1358,6 +1544,8 @@ function renderRuleManager(rules: CategorizationRule[], categories: Category[]):
         })
         .join("")}
     </ul>
+    `
+    }
   `;
 }
 
@@ -1392,6 +1580,7 @@ function renderRuleEditor(editor: RuleEditorState, categories: Category[]): stri
   }
 
   const availableCategories = categories.filter((category) => !category.hidden || category.id === editor.categoryId);
+  const selectedCategory = editor.categoryId ? categories.find((category) => category.id === editor.categoryId) : null;
   return `
     <form class="inline-editor-card" data-form="rule-editor">
       <div class="inline-editor-grid">
@@ -1400,15 +1589,28 @@ function renderRuleEditor(editor: RuleEditorState, categories: Category[]): stri
           <input id="rulePattern" name="pattern" type="text" value="${escapeHtml(editor.pattern)}" placeholder="Ex: openai" />
         </div>
         <div class="field">
-          <label for="ruleCategory">Catégorie</label>
-          <select id="ruleCategory" name="categoryId">
+          <label for="ruleCategory">Catégorie <span class="field-hint">(optionnel)</span></label>
+          <input
+            id="ruleCategory"
+            name="categoryId"
+            type="text"
+            list="ruleCategoryOptions"
+            value="${escapeHtml(selectedCategory?.label ?? "")}"
+            placeholder="Aucune"
+            autocomplete="off"
+          />
+          <datalist id="ruleCategoryOptions">
             ${availableCategories
               .map(
                 (category) =>
-                  `<option value="${escapeHtml(category.id)}" ${category.id === editor.categoryId ? "selected" : ""}>${escapeHtml(category.label)}</option>`
+                  `<option value="${escapeHtml(category.label)}" label="${escapeHtml(category.id)}"></option>`
               )
               .join("")}
-          </select>
+          </datalist>
+        </div>
+        <div class="field field--full">
+          <label for="ruleNote">Note <span class="field-hint">(optionnel — ajoutée en commentaire sur la transaction)</span></label>
+          <input id="ruleNote" name="note" type="text" value="${escapeHtml(editor.note)}" placeholder="Ex: à vérifier avec la facture" />
         </div>
       </div>
       <div class="actions-row">
@@ -1799,20 +2001,28 @@ function renderMergePreview(
           <dd>${preview.annotationAppendixPages}</dd>
         </div>
       </dl>
-      <div class="merge-preview-columns">
-        <div>
-          <p class="fieldset-label">Sections incluses</p>
-          <ul class="merge-preview-list">${sectionSummaryItems || "<li><span>Aucune section incluse.</span></li>"}</ul>
+      <details class="document-section-group document-section-collapsible">
+        <summary class="document-section-summary merge-preview-collapsible-summary">
+          <span>
+            <span class="eyebrow">Contenu du PDF</span>
+            <span class="document-section-title">Sections incluses et relevés inclus</span>
+          </span>
+        </summary>
+        <div class="merge-preview-columns">
+          <div>
+            <p class="fieldset-label">Sections incluses</p>
+            <ul class="merge-preview-list">${sectionSummaryItems || "<li><span>Aucune section incluse.</span></li>"}</ul>
+          </div>
+          <div>
+            <p class="fieldset-label">Relevés bancaires inclus</p>
+            <ul class="merge-preview-list">${providedMonths}</ul>
+          </div>
+          <div>
+            <p class="fieldset-label">Commentaires ajoutes</p>
+            <ul class="merge-preview-list">${justifiedMissingMonths}</ul>
+          </div>
         </div>
-        <div>
-          <p class="fieldset-label">Relevés bancaires inclus</p>
-          <ul class="merge-preview-list">${providedMonths}</ul>
-        </div>
-        <div>
-          <p class="fieldset-label">Commentaires ajoutes</p>
-          <ul class="merge-preview-list">${justifiedMissingMonths}</ul>
-        </div>
-      </div>
+      </details>
     </section>
   `;
 }
@@ -1824,6 +2034,43 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function resolveCategoryIdFromInput(value: string, categories: Category[]): string | undefined {
+  const normalizedValue = normalizeSearchText(value);
+  if (!normalizedValue) {
+    return undefined;
+  }
+
+  return categories.find((category) => {
+    if (category.hidden) {
+      return false;
+    }
+
+    return (
+      normalizeSearchText(category.label) === normalizedValue ||
+      normalizeSearchText(category.id) === normalizedValue
+    );
+  })?.id;
+}
+
+function focusSettingsFilter(container: HTMLElement, filterName: "categories" | "rules", caretPosition: number): void {
+  requestAnimationFrame(() => {
+    const input = container.querySelector<HTMLInputElement>(`input[data-settings-filter="${filterName}"]`);
+    if (!input) {
+      return;
+    }
+    input.focus();
+    input.setSelectionRange(caretPosition, caretPosition);
+  });
 }
 
 function getMonthCardFromEvent(event: Event): HTMLElement | null {

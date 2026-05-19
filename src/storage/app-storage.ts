@@ -551,6 +551,10 @@ async function persistAppState(state: AppState): Promise<void> {
 }
 
 async function assertStorageCapacity(state: AppState): Promise<void> {
+  if (chrome.runtime.getManifest().permissions?.includes("unlimitedStorage")) {
+    return;
+  }
+
   const quota = chrome.storage.local.QUOTA_BYTES;
   if (typeof quota !== "number") {
     return;

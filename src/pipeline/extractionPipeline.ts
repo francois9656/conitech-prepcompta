@@ -74,7 +74,7 @@ export async function runExtractionPipeline(
   });
   const primaryReconstructedTable = buildTableFromLayout(primaryLayout);
 
-  const parserOverride = options.parserTemplateOverride?.startsWith("bmo") ? "bmo" : null;
+  const parserOverride = normalizeParserOverride(options.parserTemplateOverride ?? null);
   const parser = resolveBankParser(primaryLayout, parserOverride);
   if (!parser) {
     if (primaryReconstructedTable.rows.length > 0) {
@@ -173,6 +173,22 @@ function shouldForceFullDocumentOcr(parserTemplateOverride: string | null): bool
 
 function shouldPreferOcrOnlyLayout(parserTemplateOverride: string | null): boolean {
   return shouldForceFullDocumentOcr(parserTemplateOverride);
+}
+
+function normalizeParserOverride(parserTemplateOverride: string | null): string | null {
+  if (!parserTemplateOverride || parserTemplateOverride === "auto") {
+    return null;
+  }
+
+  if (parserTemplateOverride.startsWith("bmo")) {
+    return "bmo";
+  }
+
+  if (parserTemplateOverride.startsWith("desjardins")) {
+    return "desjardins";
+  }
+
+  return parserTemplateOverride;
 }
 
 function shouldRetryWithOcrOnlyLayout(

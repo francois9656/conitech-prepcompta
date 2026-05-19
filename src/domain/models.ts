@@ -11,7 +11,8 @@ export interface Category {
 export interface CategorizationRule {
   id: string;
   pattern: string; // texte ou regex
-  categoryId: string;
+  categoryId?: string; // optionnel : la règle peut ne définir qu'une note
+  note?: string;       // optionnel : texte ajouté en note sur la transaction (cumulatif)
 }
 import type { StatementExtractionResult } from "../core/types/extraction";
 

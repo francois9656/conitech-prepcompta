@@ -1,6 +1,6 @@
 import "../../styles/base.css";
 import type { AppState, ExtractionDebugInfo, StoredPdfAnnotation, StoredPdfFile } from "../../domain/models";
-import { getAppState, updatePdfAnnotations, updatePdfExtractionData } from "../../storage/app-storage";
+import { getAppState, updateCategorizationSettings, updatePdfAnnotations, updatePdfExtractionData } from "../../storage/app-storage";
 import { analyzeLayout } from "../../modules/layout-analysis/layout-analyzer";
 import { extractTextTokensFromPdf } from "../../modules/pdf-inspection/pdf-text-extractor";
 import { extractPdfData } from "../../pdf/pdf-service";
@@ -12,6 +12,7 @@ const monthKey = params.get("monthKey");
 const fileId = params.get("fileId");
 const parserOverrideStorageKey = `parserOverride-${fileId ?? monthKey ?? "unknown"}`;
 const autoCategorizationKey = `autoCategorizationResults-${fileId ?? monthKey}`;
+const autoNotesKey = `autoNotes-${fileId ?? monthKey}`;
 // Persistance des catégories manuelles par mois (clé: "manualCategories-<monthKey>")
 let manualCategories: Record<string, string> = {};
 const manualCatKey = `manualCategories-${fileId ?? monthKey}`;
@@ -23,6 +24,19 @@ let autoCategorizationResults: Record<string, { status: "success" | "warning"; m
 try {
   const raw = localStorage.getItem(autoCategorizationKey);
   if (raw) autoCategorizationResults = JSON.parse(raw);
+} catch {}
+// Notes manuelles saisies par l'utilisateur sur chaque transaction
+let manualNotes: Record<string, string> = {};
+const manualNotesKey = `manualNotes-${fileId ?? monthKey}`;
+try {
+  const raw = localStorage.getItem(manualNotesKey);
+  if (raw) manualNotes = JSON.parse(raw);
+} catch {}
+// Notes automatiques issues des règles (recalculées à chaque auto-catégorisation)
+let autoNotes: Record<string, string> = {};
+try {
+  const raw = localStorage.getItem(autoNotesKey);
+  if (raw) autoNotes = JSON.parse(raw);
 } catch {}
 
 const container = document.querySelector<HTMLElement>("#app");
@@ -148,8 +162,10 @@ async function initViewer(root: HTMLElement): Promise<void> {
       const autoCategorization = applyAutoCategorization(currentTransactions, state, manualCategories);
       manualCategories = autoCategorization.manualCategories;
       autoCategorizationResults = autoCategorization.results;
+      autoNotes = autoCategorization.autoNotes;
       persistManualCategories();
       persistAutoCategorizationResults();
+      persistAutoNotes();
       renderViewer(root, state, monthKey ?? "", pdfUrl ?? "", draftAnnotations, isSaving, undefined, undefined, fileId ?? undefined, parserOverride);
       return;
     }
@@ -185,6 +201,31 @@ async function initViewer(root: HTMLElement): Promise<void> {
       return;
     }
 
+    const createRuleButton = target.closest<HTMLButtonElement>("button[data-action='create-rule-from-transaction']");
+    if (createRuleButton) {
+      const description = createRuleButton.dataset.description ?? "";
+      const categoryId = createRuleButton.dataset.categoryId ?? "";
+      if (!description || !categoryId) {
+        return;
+      }
+      const newRule = { id: `rule_${crypto.randomUUID()}`, pattern: description, categoryId };
+      state = await updateCategorizationSettings({
+        categorizationRules: [...state.categorizationRules, newRule]
+      });
+      // Appliquer la nouvelle règle uniquement aux transactions non encore catégorisées
+      const currentContext = getViewerContext(state, monthKey, fileId);
+      const currentTransactions = currentContext?.file.extractionResult?.transactions ?? [];
+      const autoCategorization = applyAutoCategorization(currentTransactions, state, manualCategories, true);
+      manualCategories = autoCategorization.manualCategories;
+      autoCategorizationResults = autoCategorization.results;
+      autoNotes = autoCategorization.autoNotes;
+      persistManualCategories();
+      persistAutoCategorizationResults();
+      persistAutoNotes();
+      renderViewer(root, state, monthKey ?? "", pdfUrl ?? "", draftAnnotations, isSaving, undefined, undefined, fileId ?? undefined, parserOverride);
+      return;
+    }
+
     const rerunButton = target.closest<HTMLButtonElement>("button[data-action='rerun-extraction']");
     if (!rerunButton) {
       return;
@@ -195,7 +236,33 @@ async function initViewer(root: HTMLElement): Promise<void> {
       return;
     }
 
+    const confirmed = confirm(
+      [
+        "Relancer l'extraction va supprimer les transactions actuellement extraites pour ce document.",
+        "",
+        "Les catégories et commentaires associés aux transactions seront aussi effacés, puis les transactions seront extraites à nouveau depuis le PDF.",
+        "",
+        "Continuer ?"
+      ].join("\n")
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    const rerunFile = createFileFromStoredPdf(currentContext.file);
+    clearTransactionLocalState();
     isSaving = true;
+    state = await updatePdfExtractionData(currentContext.file.id, undefined, {
+      lastRunAt: new Date().toISOString(),
+      lastRunDurationMs: 0,
+      lastRunStatus: "skipped",
+      lastWarnings: ["Extraction precedente supprimee avant relance."],
+      lastTransactionsCount: 0,
+      lastBankDetected: null,
+      lastParserDetected: parserOverride === "auto" ? null : parserOverride,
+      lastParserReason: parserOverride === "auto" ? null : "Selection manuelle temporaire du parseur.",
+      lastUsedOCR: false
+    });
     renderViewer(
       root,
       state,
@@ -210,7 +277,6 @@ async function initViewer(root: HTMLElement): Promise<void> {
     );
 
     try {
-      const rerunFile = createFileFromStoredPdf(currentContext.file);
       const { extractionResult, extractionDebug } = await runExtractionWithDiagnostics(
         rerunFile,
         Boolean(currentContext.file.passwordProtected),
@@ -253,7 +319,7 @@ async function initViewer(root: HTMLElement): Promise<void> {
 
   root.addEventListener("change", (event) => {
     const target = event.target;
-    if (!(target instanceof HTMLSelectElement)) {
+    if (!(target instanceof HTMLSelectElement) && !(target instanceof HTMLInputElement)) {
       return;
     }
 
@@ -263,7 +329,7 @@ async function initViewer(root: HTMLElement): Promise<void> {
       return;
     }
 
-    if (!target.classList.contains("transaction-category")) {
+    if (!target.classList.contains("transaction-category") && !target.classList.contains("transaction-comment")) {
       return;
     }
 
@@ -272,14 +338,35 @@ async function initViewer(root: HTMLElement): Promise<void> {
       return;
     }
 
-    if (target.value) {
-      manualCategories[String(transactionIndex)] = target.value;
-    } else {
+    if (target.classList.contains("transaction-comment")) {
+      const value = target.value.trim();
+      if (value) {
+        manualNotes[String(transactionIndex)] = value;
+      } else {
+        delete manualNotes[String(transactionIndex)];
+      }
+      persistManualNotes();
+      return;
+    }
+
+    if (!target.value.trim()) {
+      target.setCustomValidity("");
       delete manualCategories[String(transactionIndex)];
+    } else {
+      const categoryId = findCategoryIdFromInputValue(target.value, state.categories);
+      if (!categoryId) {
+        target.setCustomValidity("Choisis une catégorie dans la liste.");
+        target.reportValidity();
+        return;
+      }
+      target.setCustomValidity("");
+      manualCategories[String(transactionIndex)] = categoryId;
     }
     delete autoCategorizationResults[String(transactionIndex)];
     persistManualCategories();
     persistAutoCategorizationResults();
+    // Re-render pour afficher/masquer le bouton "Créer règle"
+    renderViewer(root, state, monthKey ?? "", pdfUrl ?? "", draftAnnotations, isSaving, undefined, undefined, fileId ?? undefined, parserOverride);
   });
 
   renderViewer(root, state, monthKey ?? "", pdfUrl ?? "", draftAnnotations, isSaving, ocrDebugText, ocrInput, fileId ?? undefined, parserOverride);
@@ -315,15 +402,22 @@ function renderViewer(
     const manualCat = manualCategories[idx];
     const autoResult = autoCategorizationResults[String(idx)] ?? null;
     const detectedCategoryId = autoResult?.selectedCategoryId ?? null;
-    return { ...t, _autoCategoryId: detectedCategoryId, _manualCategoryId: manualCat, _autoResult: autoResult };
+    const autoNote = autoNotes[String(idx)] ?? null;
+    const manualNote = manualNotes[String(idx)] ?? null;
+    // La note finale cumule note auto + note manuelle si les deux sont présentes
+    const combinedNote = [autoNote, manualNote].filter(Boolean).join(" — ");
+    return { ...t, _autoCategoryId: detectedCategoryId, _manualCategoryId: manualCat, _autoResult: autoResult, _note: combinedNote, _manualNote: manualNote };
   });
 
   root.innerHTML = `
     <main class="viewer-shell">
       <div class="viewer-toolbar">
-        <div>
+        <div class="viewer-title-group">
           <p class="eyebrow">Vue détaillée V1</p>
-          <h1>${escapeHtml(context.month.label)}</h1>
+          <div class="viewer-title-row">
+            <h1>${escapeHtml(context.month.label)}</h1>
+            <span class="viewer-update-badge">MAJ ${escapeHtml(formatUpdateStamp(context.file.updatedAt))}</span>
+          </div>
         </div>
         <p class="helper-text">${escapeHtml(context.file.fileName)} · ${context.file.pageCount ?? "?"} page(s)</p>
       </div>
@@ -344,14 +438,25 @@ function renderViewer(
                 ${renderExtractionTimestamp(context.file)}
               </div>
             </div>
-            <button
-              class="ghost-button compact-button"
-              type="button"
-              data-action="apply-auto-categorization"
-              ${transactions.length === 0 || state.categorizationRules.length === 0 || visibleCategories.length === 0 ? "disabled" : ""}
-            >
-              Auto-catégoriser
-            </button>
+            <div class="viewer-transaction-actions">
+              <label class="viewer-parser-inline-field">
+                <span>Parseur</span>
+                <select name="parserOverride">
+                  ${renderParserOverrideOptions(parserOverride)}
+                </select>
+              </label>
+              <button class="ghost-button compact-button" type="button" data-action="rerun-extraction" ${isSaving ? "disabled" : ""}>
+                ${isSaving ? "Extraction..." : "Relancer l'extraction"}
+              </button>
+              <button
+                class="ghost-button compact-button"
+                type="button"
+                data-action="apply-auto-categorization"
+                ${transactions.length === 0 || state.categorizationRules.length === 0 || visibleCategories.length === 0 ? "disabled" : ""}
+              >
+                Auto-catégoriser
+              </button>
+            </div>
           </div>
           ${renderTransactionTable(categorizedTransactions, state.categories)}
         </section>
@@ -359,7 +464,7 @@ function renderViewer(
           <summary class="debug-panel-summary">
             <span>
               <span class="eyebrow">Actualisation extraction</span>
-              <span class="debug-panel-title">Erreurs et debug</span>
+              <span class="debug-panel-title">Debug du relevé</span>
             </span>
           </summary>
           ${renderExtractionDebug(context.file, parserOverride, isSaving)}
@@ -368,6 +473,21 @@ function renderViewer(
     </main>
   `;
 
+}
+
+function formatUpdateStamp(rawValue: string): string {
+  const date = new Date(rawValue);
+  if (Number.isNaN(date.getTime())) {
+    return rawValue;
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
 }
 
 function renderExtractionTimestamp(file: StoredPdfFile): string {
@@ -392,29 +512,45 @@ function renderExtractionTimestamp(file: StoredPdfFile): string {
 function applyAutoCategorization(
   transactions: Array<{ description?: string | null; debit?: number | null; credit?: number | null }>,
   state: AppState,
-  existingManualCategories: Record<string, string>
+  existingManualCategories: Record<string, string>,
+  skipAlreadyCategorized = false
 ): {
   manualCategories: Record<string, string>;
   results: Record<string, { status: "success" | "warning"; matchedRuleIds: string[]; selectedCategoryId: string }>;
+  autoNotes: Record<string, string>;
 } {
   const nextManualCategories = { ...existingManualCategories };
   const results: Record<string, { status: "success" | "warning"; matchedRuleIds: string[]; selectedCategoryId: string }> = {};
+  const nextAutoNotes: Record<string, string> = {};
 
   transactions.forEach((transaction, index) => {
+    // Ne pas écraser une catégorie déjà assignée manuellement si demandé
+    if (skipAlreadyCategorized && existingManualCategories[String(index)] !== undefined) {
+      return;
+    }
     const matches = findAutoCategorizationMatches(transaction, state);
     if (matches.length > 0) {
-      nextManualCategories[String(index)] = matches[0].categoryId;
-      results[String(index)] = {
-        status: matches.length > 1 ? "warning" : "success",
-        matchedRuleIds: matches.map((match) => match.ruleId),
-        selectedCategoryId: matches[0].categoryId
-      };
+      const categoryMatches = matches.filter((m) => m.categoryId);
+      if (categoryMatches.length > 0) {
+        nextManualCategories[String(index)] = categoryMatches[0].categoryId!;
+        results[String(index)] = {
+          status: categoryMatches.length > 1 ? "warning" : "success",
+          matchedRuleIds: matches.map((match) => match.ruleId),
+          selectedCategoryId: categoryMatches[0].categoryId!
+        };
+      }
+      // Concaténer toutes les notes issues des règles correspondantes
+      const ruleNotes = matches.map((m) => m.note).filter((n): n is string => Boolean(n));
+      if (ruleNotes.length > 0) {
+        nextAutoNotes[String(index)] = ruleNotes.join(" — ");
+      }
     }
   });
 
   return {
     manualCategories: nextManualCategories,
-    results
+    results,
+    autoNotes: nextAutoNotes
   };
 }
 
@@ -430,10 +566,36 @@ function persistAutoCategorizationResults(): void {
   } catch {}
 }
 
+function persistManualNotes(): void {
+  try {
+    localStorage.setItem(manualNotesKey, JSON.stringify(manualNotes));
+  } catch {}
+}
+
+function persistAutoNotes(): void {
+  try {
+    localStorage.setItem(autoNotesKey, JSON.stringify(autoNotes));
+  } catch {}
+}
+
+function clearTransactionLocalState(): void {
+  manualCategories = {};
+  autoCategorizationResults = {};
+  manualNotes = {};
+  autoNotes = {};
+
+  try {
+    localStorage.removeItem(manualCatKey);
+    localStorage.removeItem(autoCategorizationKey);
+    localStorage.removeItem(manualNotesKey);
+    localStorage.removeItem(autoNotesKey);
+  } catch {}
+}
+
 function findAutoCategorizationMatches(
   transaction: { description?: string | null; debit?: number | null; credit?: number | null },
   state: AppState
-): Array<{ ruleId: string; categoryId: string }> {
+): Array<{ ruleId: string; categoryId?: string; note?: string }> {
   const searchableText = buildTransactionSearchableText(transaction);
   if (!searchableText) {
     return [];
@@ -444,13 +606,16 @@ function findAutoCategorizationMatches(
       if (!rule.pattern?.trim()) {
         return false;
       }
-      const category = state.categories.find((item) => item.id === rule.categoryId);
-      if (!category || category.hidden) {
-        return false;
+      // Si la règle a une catégorie, elle ne doit pas être masquée
+      if (rule.categoryId) {
+        const category = state.categories.find((item) => item.id === rule.categoryId);
+        if (!category || category.hidden) {
+          return false;
+        }
       }
-      return searchableText.includes(rule.pattern.toLowerCase());
+      return searchableText.includes(normalizeTextForMatching(rule.pattern));
     })
-    .map((rule) => ({ ruleId: rule.id, categoryId: rule.categoryId }));
+    .map((rule) => ({ ruleId: rule.id, categoryId: rule.categoryId, note: rule.note }));
 }
 
 function buildTransactionSearchableText(transaction: {
@@ -463,10 +628,18 @@ function buildTransactionSearchableText(transaction: {
     stringifyAmountForMatching(transaction.debit),
     stringifyAmountForMatching(transaction.credit)
   ]
-    .map((value) => value.trim().toLowerCase())
+    .map((value) => normalizeTextForMatching(value))
     .filter(Boolean);
 
   return parts.join(" ");
+}
+
+function normalizeTextForMatching(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
 function stringifyAmountForMatching(value: number | null | undefined): string {
@@ -479,10 +652,39 @@ function stringifyAmountForMatching(value: number | null | undefined): string {
   return `${fixed} ${fixed.replace(".", ",")} ${fr}`;
 }
 
+function findCategoryIdFromInputValue(value: string, categories: any[]): string | null {
+  const normalizedValue = normalizeTextForMatching(value);
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const match = categories.find((category: any) => {
+    if (category.hidden) {
+      return false;
+    }
+    return (
+      normalizeTextForMatching(category.label ?? "") === normalizedValue ||
+      normalizeTextForMatching(category.id ?? "") === normalizedValue
+    );
+  });
+
+  return match?.id ?? null;
+}
+
 function renderTransactionTable(transactions: any[], categories: any[]): string {
   if (!transactions.length) {
     return `<p class="helper-text">Aucune transaction détectée.</p>`;
   }
+
+  const visibleCategories = categories.filter((category: any) => !category.hidden);
+
+  // Pré-calculer les descriptions qui apparaissent plus d'une fois
+  const descriptionCounts = new Map<string, number>();
+  for (const t of transactions) {
+    const desc = (t.description ?? "").trim();
+    if (desc) descriptionCounts.set(desc, (descriptionCounts.get(desc) ?? 0) + 1);
+  }
+
   return `
     <table class="transaction-table">
       <thead>
@@ -502,9 +704,12 @@ function renderTransactionTable(transactions: any[], categories: any[]): string 
             (t: any, idx: number) => {
               const autoCat = categories.find((c: any) => c.id === t._autoCategoryId);
               const manualCat = categories.find((c: any) => c.id === t._manualCategoryId);
-              const availableCategories = categories.filter((cat: any) => !cat.hidden || cat.id === manualCat?.id);
               const selectedCategoryId = manualCat?.id ?? autoCat?.id ?? "";
+              const selectedCategory = manualCat ?? autoCat ?? null;
               const autoIndicator = renderAutoCategorizationIndicator(t._autoResult, categories);
+              const desc = (t.description ?? "").trim();
+              const isDescriptionDuplicate = (descriptionCounts.get(desc) ?? 0) > 1;
+              const showCreateRuleBtn = isDescriptionDuplicate && selectedCategoryId !== "";
               return `<tr>
                 <td>${escapeHtml(t.date ?? "")}</td>
                 <td>${escapeHtml(t.description ?? "")}</td>
@@ -513,15 +718,21 @@ function renderTransactionTable(transactions: any[], categories: any[]): string 
                 <td>${t.balance != null ? t.balance.toLocaleString("fr-FR", { minimumFractionDigits: 2 }) : ""}</td>
                 <td>
                   <div class="transaction-category-cell">
-                    <select data-transaction-idx="${idx}" class="transaction-category">
-                      <option value="">${autoCat ? `Auto: ${escapeHtml(autoCat.label)}` : 'Non catégorisé'}</option>
-                      ${availableCategories.map((cat: any) => `<option value="${cat.id}"${cat.id === selectedCategoryId ? ' selected' : ''}>${escapeHtml(cat.label)}</option>`).join("")}
-                    </select>
+                    <input
+                      type="text"
+                      list="transaction-category-options"
+                      data-transaction-idx="${idx}"
+                      class="transaction-category"
+                      value="${escapeHtml(selectedCategory?.label ?? "")}"
+                      placeholder="${autoCat ? `Auto: ${escapeHtml(autoCat.label)}` : "Non catégorisé"}"
+                      autocomplete="off"
+                    />
                     ${autoIndicator}
+                    ${showCreateRuleBtn ? `<button class="ghost-button compact-button" type="button" data-action="create-rule-from-transaction" data-description="${escapeHtml(desc)}" data-category-id="${escapeHtml(selectedCategoryId)}" title="Créer une règle automatique pour cette description">+ Règle</button>` : ""}
                   </div>
                 </td>
                 <td>
-                  <input type="text" data-transaction-idx="${idx}" class="transaction-comment" placeholder="Ajouter un commentaire..." />
+                  <input type="text" data-transaction-idx="${idx}" class="transaction-comment" value="${escapeHtml(t._manualNote ?? "")}" placeholder="${escapeHtml(t._note && !t._manualNote ? t._note : "Ajouter un commentaire...")}" />
                 </td>
               </tr>`;
             }
@@ -529,6 +740,14 @@ function renderTransactionTable(transactions: any[], categories: any[]): string 
           .join("")}
       </tbody>
     </table>
+    <datalist id="transaction-category-options">
+      ${visibleCategories
+        .map(
+          (cat: any) =>
+            `<option value="${escapeHtml(cat.label)}" label="${escapeHtml(cat.id)}"></option>`
+        )
+        .join("")}
+    </datalist>
   `;
 }
 
@@ -629,41 +848,41 @@ function renderExtractionDebug(file: StoredPdfFile, parserOverride: string, isBu
     ? `<details><summary>Stack trace</summary><pre class="debug-stack-block">${escapeHtml(extractionDebug.lastErrorStack)}</pre></details>`
     : "";
 
-  let ocrBlock = "";
-  if (extractionDebug?.ocrPages && extractionDebug.ocrPages.length > 0) {
-    ocrBlock = `
-      <details class="debug-ocr-block">
-        <summary>Texte OCR brut par page</summary>
-        <ul class="ocr-page-list">
-          ${extractionDebug.ocrPages
-            .map(
-              (page) => `
-                <li><strong>Page ${page.pageNumber} :</strong><pre class="ocr-raw-text">${escapeHtml(page.text)}</pre></li>
-              `
-            )
-            .join("")}
-        </ul>
-      </details>
-    `;
-  }
+  const ocrBlock =
+    extractionDebug?.ocrPages && extractionDebug.ocrPages.length > 0
+      ? `
+        <details class="debug-ocr-block">
+          <summary>Texte OCR brut par page</summary>
+          <ul class="ocr-page-list">
+            ${extractionDebug.ocrPages
+              .map(
+                (page) => `
+                  <li><strong>Page ${page.pageNumber} :</strong><pre class="ocr-raw-text">${escapeHtml(page.text)}</pre></li>
+                `
+              )
+              .join("")}
+          </ul>
+        </details>
+      `
+      : "";
 
-  let candidateBlock = "";
-  if (extractionDebug?.candidateLines && extractionDebug.candidateLines.length > 0) {
-    candidateBlock = `
-      <details class="debug-candidates-block">
-        <summary>Lignes candidates reconstruites</summary>
-        <ul class="candidate-line-list">
-          ${extractionDebug.candidateLines
-            .map(
-              (line) => `
-                <li><strong>Page ${line.pageNumber} :</strong> <span class="candidate-line-text">${escapeHtml(line.text)}</span></li>
-              `
-            )
-            .join("")}
-        </ul>
-      </details>
-    `;
-  }
+  const candidateBlock =
+    extractionDebug?.candidateLines && extractionDebug.candidateLines.length > 0
+      ? `
+        <details class="debug-candidates-block">
+          <summary>Lignes candidates reconstruites</summary>
+          <ul class="candidate-line-list">
+            ${extractionDebug.candidateLines
+              .map(
+                (line) => `
+                  <li><strong>Page ${line.pageNumber} :</strong> <span class="candidate-line-text">${escapeHtml(line.text)}</span></li>
+                `
+              )
+              .join("")}
+          </ul>
+        </details>
+      `
+      : "";
 
   const parserInputBlock = extractionDebug?.parserInputText
     ? `
@@ -680,9 +899,9 @@ function renderExtractionDebug(file: StoredPdfFile, parserOverride: string, isBu
       ${errorBlock}
       ${stackBlock}
       <div class="debug-override-row">
-        <div class="field">
-          <label for="parserOverride">Parseur forcé temporaire</label>
-          <select id="parserOverride" name="parserOverride">
+        <div class="field viewer-parser-override-field">
+          <label for="parserOverrideDebug">Parseur forcé temporaire</label>
+          <select id="parserOverrideDebug" name="parserOverride">
             ${renderParserOverrideOptions(parserOverride)}
           </select>
         </div>
@@ -748,7 +967,8 @@ function renderParserOverrideOptions(currentValue: string): string {
     ["auto", "Auto"],
     ["bmo-mastercard-ocr", "BMO Mastercard OCR"],
     ["bmo-ocr", "BMO OCR"],
-    ["bmo-standard", "BMO Standard"]
+    ["bmo-standard", "BMO Standard"],
+    ["desjardins", "Desjardins carte de crédit"]
   ]
     .map(([value, label]) => `<option value="${value}" ${currentValue === value ? "selected" : ""}>${label}</option>`)
     .join("");

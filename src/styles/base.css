@@ -91,6 +91,46 @@ button {
   justify-content: flex-start;
 }
 
+.viewer-toolbar {
+  align-items: flex-end;
+}
+
+.viewer-toolbar-meta {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.viewer-title-group {
+  display: grid;
+  gap: 4px;
+}
+
+.viewer-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.viewer-update-badge {
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border) 70%);
+  background: color-mix(in srgb, var(--accent-soft) 58%, var(--bg-elevated) 42%);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 5px 10px;
+  white-space: nowrap;
+}
+
+.viewer-parser-override-field {
+  min-width: 240px;
+}
+
 .utility-actions {
   margin-top: 6px;
 }
@@ -598,6 +638,10 @@ h3 {
   font-weight: 600;
 }
 
+.merge-preview-collapsible-summary {
+  margin-bottom: 10px;
+}
+
 .merge-preview-columns {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -643,6 +687,14 @@ h3 {
   gap: 8px;
   margin: 12px 0 0;
   padding: 0;
+}
+
+.settings-filter-field {
+  margin-top: 12px;
+}
+
+.settings-filter-field input[type="search"] {
+  min-height: 40px;
 }
 
 .segmented-control {
@@ -748,6 +800,30 @@ h3 {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 8px 12px;
+}
+
+.viewer-transaction-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.viewer-parser-inline-field {
+  display: grid;
+  gap: 4px;
+  min-width: 170px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.viewer-parser-inline-field select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 7px 8px;
 }
 
 .transaction-extraction-timestamp {
